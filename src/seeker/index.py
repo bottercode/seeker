@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import warnings
+from datetime import timedelta
+
 import lancedb
 
 from seeker.config import Settings
@@ -34,4 +37,9 @@ def build_indexes(settings: Settings, log=print) -> None:
     else:
         log(f"  vector index skipped (< {ANN_MIN_ROWS:,} rows, flat search is exact and fast)")
 
-    table.optimize()
+    # Compact small fragments and delete superseded versions/indexes to reclaim disk
+    # (roughly halves disk use). Don't run ingest/index while `seeker serve` is running.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        table.optimize(cleanup_older_than=timedelta(seconds=0))
+    log("  compacted and cleaned up old versions")

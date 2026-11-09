@@ -165,6 +165,9 @@ def ingest(
     settings: Settings, n: int, per_fragment: int = 250, seed: int = 0, workers: int = 4, log=print
 ) -> int:
     """Sample ~n pages from the source and upsert them (deduped by URL) into the local table."""
+    from seeker.quality import ensure_tranco, host_quality
+
+    ensure_tranco(log)
     src = open_source(settings)
     fragments = src.get_fragments()
     log(f"source: {src.count_rows():,} rows in {len(fragments):,} fragments")
@@ -174,7 +177,7 @@ def ingest(
     before = table.count_rows()
     # Dedupe by URL in memory (merge_insert per batch rescans the table and gets quadratic).
     seen = set(table.to_lance().to_table(columns=["url"]).column("url").to_pylist()) if before else set()
-    fetched, pending = 0, []
+    fetched, spam, pending = 0, 0, []
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(_read_chunk, fragments[i], off, lim) for i, off, lim in chunks]
         for done, fut in enumerate(as_completed(futures), 1):
@@ -183,7 +186,11 @@ def ingest(
                 if r["url"] in seen or not r["text"] or r["text_embedding"] is None:
                     continue
                 seen.add(r["url"])
-                batch.append(to_record(r))
+                rec = to_record(r)
+                if host_quality(rec["domain"])[1]:
+                    spam += 1
+                    continue
+                batch.append(rec)
             pending.extend(batch)
             if len(pending) >= 5000 or done == len(futures):
                 if pending:
@@ -193,6 +200,7 @@ def ingest(
             if done % 20 == 0 or done == len(futures):
                 log(f"  {done}/{len(futures)} chunks, {fetched:,} pages")
     added = table.count_rows() - before
+    log(f"skipped {spam:,} spam pages")
     log(f"added {added:,} new pages; table '{settings.table}' now has {table.count_rows():,} rows")
     return added
 

@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     rerank_depth: int = 30  # candidates sent to the cross-encoder
     rerank_max_length: int = 256  # tokens per (query, doc) pair
     rerank_chars: int = 1000  # leading characters of each page given to the reranker
+    # Host quality: drop spam hosts; nudge hybrid ranking toward known sites (Tranco/.gov/.edu).
+    spam_filter: bool = True
+    # Popularity prior weight (RRF scores are ~0.03). Off: it did not improve the relevance eval.
+    prior_weight: float = 0.0
     candidate_k: int = 100  # candidates pulled from each retriever before fusion
     rrf_k: int = 60
 

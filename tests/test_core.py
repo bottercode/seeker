@@ -54,3 +54,15 @@ def test_build_where_escapes_and_combines():
     assert "domain = 'nasa.gov'" in w and "domain LIKE '%.nasa.gov'" in w
     assert "text NOT LIKE '%it''s 100\\%%'" in w
     assert "published >= '2020-01-01'" in w
+
+
+def test_passes_spam_and_text_filters():
+    from seeker.search import _passes
+
+    good = {"domain": "nasa.gov", "text": "The Water Cycle explained for students"}
+    spam = {"domain": "lqassignmentbbda.weblogparkeren.info", "text": "water cycle"}
+    assert _passes(good, Filters())
+    assert not _passes(spam, Filters())
+    assert _passes(good, Filters(include_text=["water cycle"]))  # case-insensitive
+    assert not _passes(good, Filters(include_text=["photosynthesis"]))
+    assert not _passes(good, Filters(exclude_text=["STUDENTS"]))

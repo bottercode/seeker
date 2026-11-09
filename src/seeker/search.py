@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from typing import Literal
 
@@ -12,6 +12,7 @@ import numpy as np
 
 from seeker import models
 from seeker.config import get_settings
+from seeker.quality import host_quality
 
 SearchType = Literal["auto", "neural", "keyword", "fast"]
 RESULT_COLUMNS = ["id", "url", "domain", "title", "text", "published", "quality"]
@@ -186,6 +187,43 @@ def hyde_passage(query: str) -> str | None:
 # ---------- public API ----------
 
 
+def _passes(row: dict, f: Filters) -> bool:
+    """Spam + text filters, applied in Python to retrieved candidates (case-insensitive)."""
+    s = get_settings()
+    if s.spam_filter and host_quality(row["domain"])[1]:
+        return False
+    if f.include_text or f.exclude_text:
+        text = row["text"].lower()
+        if any(p.lower() not in text for p in f.include_text):
+            return False
+        if any(p.lower() in text for p in f.exclude_text):
+            return False
+    return True
+
+
+def _candidates(query: str, qvec, type: SearchType, where: str | None, k: int) -> list[dict]:
+    """Ranked candidates, each with a comparable score in ``_s``."""
+    s = get_settings()
+    if type == "keyword":
+        rows = keyword_search(query, where, k)
+        for r in rows:
+            r["_s"] = float(r["_score"])
+        return dedupe(rows)
+    if type == "neural":
+        rows = vector_search(qvec, where, k)
+        for r in rows:
+            r["_s"] = r["_sim"]
+        return dedupe(rows)
+    vector_lists = [vector_search(qvec, where, k)]
+    if type == "auto" and (passage := hyde_passage(query)):
+        vector_lists.append(vector_search(models.embed_docs([passage])[0], where, k))
+    fused = dedupe(rrf([*vector_lists, keyword_search(query, where, k)], k=s.rrf_k))
+    # Host-quality prior: a small nudge toward well-known / institutional sites.
+    for r in fused:
+        r["_s"] = r["_rrf"] + s.prior_weight * host_quality(r["domain"])[0]
+    return sorted(fused, key=lambda r: r["_s"], reverse=True)
+
+
 def search(
     query: str,
     num_results: int = 10,
@@ -193,27 +231,21 @@ def search(
     filters: Filters | None = None,
 ) -> list[Hit]:
     s = get_settings()
-    where = build_where(filters or Filters())
+    f = filters or Filters()
     k = max(s.candidate_k, num_results * 3)
+    qvec = None if type == "keyword" else models.embed_query(query)
 
-    if type == "keyword":
-        rows = dedupe(keyword_search(query, where, k))
-        return [_hit(r, float(r["_score"])) for r in rows[:num_results]]
+    # Fast path: SQL-prefilter only the cheap indexed fields; check text filters on candidates.
+    cheap = replace(f, include_text=[], exclude_text=[])
+    rows = [r for r in _candidates(query, qvec, type, build_where(cheap), k) if _passes(r, f)]
+    if (f.include_text or f.exclude_text) and len(rows) < num_results:
+        # Too few candidates survived: fall back to a full-table text scan (slower, complete).
+        rows = [r for r in _candidates(query, qvec, type, build_where(f), k) if _passes(r, f)]
 
-    qvec = models.embed_query(query)
-    if type == "neural":
-        rows = dedupe(vector_search(qvec, where, k))
-        return [_hit(r, r["_sim"]) for r in rows[:num_results]]
+    if type in ("keyword", "neural", "fast") or s.rerank == "off":
+        return [_hit(r, r["_s"]) for r in rows[:num_results]]
 
-    vector_lists = [vector_search(qvec, where, k)]
-    if type == "auto" and (passage := hyde_passage(query)):
-        vector_lists.append(vector_search(models.embed_docs([passage])[0], where, k))
-    fused = dedupe(rrf([*vector_lists, keyword_search(query, where, k)], k=s.rrf_k))
-
-    if type == "fast" or s.rerank == "off":
-        return [_hit(r, r["_rrf"]) for r in fused[:num_results]]
-
-    head = fused[: max(s.rerank_depth, num_results)]
+    head = rows[: max(s.rerank_depth, num_results)]
     scores = models.rerank_scores(query, [f"{r['title']}\n{r['text'][: s.rerank_chars]}" for r in head])
     if s.rerank == "pure":
         ranked = sorted(zip(head, scores), key=lambda p: p[1], reverse=True)
@@ -269,7 +301,11 @@ def find_similar(
     if exclude_source_domain:
         filters.exclude_domains = [*filters.exclude_domains, domain_of(url)]
     k = max(get_settings().candidate_k, num_results * 3)
-    rows = [r for r in dedupe(vector_search(vec, build_where(filters), k)) if url_key(r["url"]) != url_key(url)]
+    rows = [
+        r
+        for r in dedupe(vector_search(vec, build_where(filters), k))
+        if url_key(r["url"]) != url_key(url) and _passes(r, Filters())
+    ]
     return [_hit(r, r["_sim"]) for r in rows[:num_results]]
 
 

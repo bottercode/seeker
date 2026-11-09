@@ -26,10 +26,12 @@ git clone https://github.com/bottercode/seeker && cd seeker
 brew install uv            # or: curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync
 uv run hf auth login       # free HF account, avoids anonymous rate limits
-uv run seeker ingest --n 100000     # ~12 min, ~1.5 GB on disk
+uv run seeker ingest --n 100000     # ~10 min; ~0.5 GB per 100k pages
 uv run seeker search "how do vaccines train the immune system"
 uv run seeker serve        # http://127.0.0.1:8000/docs
 ```
+
+Run `ingest` again (with a different `--seed`) to grow the index; URLs are deduplicated. Stop `seeker serve` while ingesting, because indexing cleans up old table versions.
 
 ### HTTP API (Exa-shaped)
 
@@ -66,6 +68,8 @@ Environment variables (`SEEKER_*`) or `.env`. See `src/seeker/config.py`:
 
 | Variable | Default | |
 |---|---|---|
+| `SEEKER_SPAM_FILTER` | `true` | drop spam hosts (essay mills, pharma spam, throwaway subdomains) |
+| `SEEKER_PRIOR_WEIGHT` | `0` | boost well-known sites (Tranco top-1M, .gov/.edu); didn't help in eval |
 | `SEEKER_RERANK` | `off` | `blend` or `pure` to enable reranking in `auto` |
 | `SEEKER_RERANK_MODEL` | `cross-encoder/ms-marco-MiniLM-L6-v2` | `BAAI/bge-reranker-base` is slower |
 | `SEEKER_RERANK_DEPTH` | `30` | candidates reranked |
@@ -79,6 +83,12 @@ Environment variables (`SEEKER_*`) or `.env`. See `src/seeker/config.py`:
 ```bash
 ollama pull llama3.2:3b
 uv run python eval/run_eval.py --n 150
+```
+
+`eval/relevance.py` runs a graded relevance test: 40 everyday queries (`eval/queries.txt`), with each top-5 result graded 0/1/2 by an LLM judge (Claude Code CLI by default, or `--judge ollama`). It compares search configurations.
+
+```bash
+uv run python eval/relevance.py --configs baseline,spam_only
 ```
 
 Results: see [Benchmarks](#benchmarks).
@@ -102,15 +112,28 @@ Reranker A/B on the same queries (`auto` with `SEEKER_RERANK`):
 | ms-marco-MiniLM-L6 / 512 tok, blend | 0.820 | 500 ms |
 | bge-reranker-base / 512 tok, pure | 0.806 | 3300 ms |
 
-Rerankers didn't pay off here. Note that known-item eval only credits the one source page, so it under-rewards rerankers that surface *other* relevant pages. A graded-relevance eval is on the roadmap.
+Rerankers didn't pay off here. Note that known-item eval only credits the one source page, so it under-rewards rerankers that surface *other* relevant pages.
+
+### Relevance (LLM-judged, 40 queries × top 5)
+
+Judge: Claude. Same 40 queries throughout.
+
+| Index | Config | Relevant@5 | Highly relevant@5 | Top-1 relevant |
+|---|---|---|---|---|
+| 100k | no spam filter | 0.53 | 0.11 | 0.65 |
+| 100k | spam filter | 0.63 | 0.205 | 0.85 |
+| 100k | spam filter + popularity prior | 0.625 | 0.14 | 0.85 |
+| **397k** | **spam filter (default)** | **0.765** | **0.26** | **0.875** |
+
+Index size is the biggest lever. Known-item scores *drop* as the index grows (0.82 → 0.68 MRR@10 at 397k) because there are more near-duplicate competitors for each target. That's expected, and why the graded eval is the better measure. At 397k pages the vector search uses an `IVF_HNSW_SQ` index: 97.5% recall@10 vs exact search, 18 ms vs 142 ms.
 
 ## Limitations
 
 - The index is a snapshot of educational/informational pages, so it's weak on news and very recent events.
 - FineWeb has no `<title>` or publish date. Titles are derived heuristically, and `publishedDate` is the Common Crawl crawl date.
 - `/answer` and Exa's `category` filter are not implemented yet.
-- No spam/host-quality signal yet, so some SEO-spam subdomains show up. Common Crawl host ranks are the planned fix.
+- Spam filtering is rule-based (spam keywords and random-looking subdomains on domains outside Tranco/.gov/.edu). It catches essay mills and pharma spam, but not every low-quality site.
 
 ## Data & license
 
-Code: MIT. Index data: FineWeb-Edu, [ODC-BY 1.0](https://opendatacommons.org/licenses/by/1-0/), also subject to the [Common Crawl terms of use](https://commoncrawl.org/terms-of-use).
+Code: MIT. Host popularity list: [Tranco](https://tranco-list.eu) (Le Pochat et al., NDSS 2019), downloaded on first ingest. Index data: FineWeb-Edu, [ODC-BY 1.0](https://opendatacommons.org/licenses/by/1-0/), also subject to the [Common Crawl terms of use](https://commoncrawl.org/terms-of-use).
