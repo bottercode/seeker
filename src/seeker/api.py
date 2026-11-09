@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from contextlib import asynccontextmanager
 from typing import Literal
 
 from fastapi import FastAPI
@@ -132,8 +133,20 @@ def _render(hit: engine.Hit, opts: ContentsOptions, query: str | None, score: bo
     return res
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Load models and open the table before serving, so the first request isn't ~7 s slower.
+    await run_in_threadpool(engine.search, "warm up", 1, "auto")
+    yield
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="seeker", version="0.1.0", description="Open-source semantic web search, Exa-compatible API.")
+    app = FastAPI(
+        title="seeker",
+        version="0.1.0",
+        description="Open-source semantic web search, Exa-compatible API.",
+        lifespan=lifespan,
+    )
 
     @app.get("/health")
     def health():
