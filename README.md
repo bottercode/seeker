@@ -123,9 +123,18 @@ Judge: Claude. Same 40 queries throughout.
 | 100k | no spam filter | 0.53 | 0.11 | 0.65 |
 | 100k | spam filter | 0.63 | 0.205 | 0.85 |
 | 100k | spam filter + popularity prior | 0.625 | 0.14 | 0.85 |
-| **397k** | **spam filter (default)** | **0.765** | **0.26** | **0.875** |
+| 397k | spam filter | 0.765 | 0.26 | 0.875 |
+| **990k** | **spam filter (default)** | **0.82** | **0.30** | **0.875** |
 
-Index size is the biggest lever. Known-item scores *drop* as the index grows (0.82 → 0.68 MRR@10 at 397k) because there are more near-duplicate competitors for each target. That's expected, and why the graded eval is the better measure. At 397k pages the vector search uses an `IVF_HNSW_SQ` index: 97.5% recall@10 vs exact search, 18 ms vs 142 ms.
+Index size is the biggest lever. Known-item scores *drop* as the index grows because there are more near-duplicate competitors for each target. That's expected, and why the graded eval is the better measure:
+
+| Index | `keyword` MRR@10 | `neural` MRR@10 | `auto` MRR@10 | `auto` Recall@10 | `auto` p50 |
+|---|---|---|---|---|---|
+| 100k | 0.732 | 0.824 | 0.824 | 0.927 | 45 ms |
+| 397k | 0.614 | 0.661 | 0.684 | – | 32 ms |
+| 990k | 0.544 | 0.571 | 0.609 | 0.800 | 47 ms |
+
+From 250k pages up, the vector search uses an `IVF_HNSW_SQ` index (at 397k: 97.5% recall@10 vs exact search, 18 ms vs 142 ms). The 990k index takes 4.7 GB on disk; ingesting ran at about 6 min per 100k pages on an M2 MacBook Air.
 
 ## Limitations
 
